@@ -348,10 +348,19 @@ body{overflow-x:hidden;}
             </div>
             <div class="fg">
               <label class="fl">Health Facility / PHU <span style="color:var(--red)">*</span></label>
-              <select class="fsel" id="ds-phu" disabled>
+              <select class="fsel" id="ds-phu" disabled onchange="checkPHUDuplicate()">
                 <option value="">Select PHU...</option>
               </select>
               <div class="cascade-cnt" id="cnt-phu"></div>
+            </div>
+            <!-- Duplicate PHU warning -->
+            <div id="phuDupWarn" style="display:none;background:var(--red-l);border:2px solid var(--red);border-radius:10px;padding:12px 14px;margin-top:4px;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" width="18" height="18" style="flex-shrink:0;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <span style="font-size:12px;font-weight:700;color:var(--red);letter-spacing:.5px;text-transform:uppercase;">ALREADY DISPATCHED</span>
+              </div>
+              <div style="font-size:11px;color:var(--red);margin-bottom:8px;">This PHU has already received a dispatch. Only one dispatch is allowed per PHU.</div>
+              <div id="phuDupCard" style="background:#fff;border-radius:8px;padding:10px 12px;"></div>
             </div>
           </div>
         </div>
@@ -376,7 +385,7 @@ body{overflow-x:hidden;}
               <strong id="qtyTotal">0</strong>
             </div>
             <div style="display:flex;justify-content:flex-end;margin-top:14px;">
-              <button class="btn btn-navy" onclick="goStep2()">
+              <button class="btn btn-navy" id="btnNextStep2" onclick="goStep2()">
                 NEXT — VERIFY CONVEYOR
                 <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
               </button>
@@ -801,6 +810,7 @@ function cascadePHU() {
   const phuSel=document.getElementById('ds-phu');
   phuSel.innerHTML='<option value="">Select PHU...</option>'; phuSel.disabled=true;
   document.getElementById('cnt-phu').textContent='';
+  hidePHUDupWarn();
   if (!d||!c||!locationData[d]?.[c]) return;
   phuSel.disabled=false;
   locationData[d][c].forEach(p => {
@@ -808,6 +818,103 @@ function cascadePHU() {
   });
   const n=locationData[d][c].length;
   document.getElementById('cnt-phu').textContent = n + ' facilit'+(n!==1?'ies':'y');
+}
+
+function hidePHUDupWarn() {
+  document.getElementById('phuDupWarn').style.display = 'none';
+  const btn = document.getElementById('btnNextStep2');
+  if (btn) btn.disabled = false;
+}
+
+async function checkPHUDuplicate() {
+  const phu      = document.getElementById('ds-phu').value;
+  const district = document.getElementById('ds-district').value.trim();
+  const chiefdom = document.getElementById('ds-chiefdom').value;
+  hidePHUDupWarn();
+  if (!phu) return;
+
+  const key = (district + '|' + chiefdom + '|' + phu).toLowerCase();
+
+  // ── 1. Check LOCAL storage immediately ───────────────────────
+  const localMatch = dispatches.find(r =>
+    ((r.destination_district||'') + '|' + (r.chiefdom||'') + '|' + (r.phu||'')).toLowerCase() === key
+  );
+  if (localMatch) { showPHUDupWarn(localMatch, 'local'); return; }
+
+  // ── 2. Check REMOTE (Google Sheets) ───────────────────────────
+  // Show a subtle "checking..." indicator on the NEXT button
+  const btn = document.getElementById('btnNextStep2');
+  const origHTML = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> CHECKING…'; }
+
+  try {
+    const url = GAS_URL + '?action=checkPHUDispatch' +
+      '&district=' + encodeURIComponent(district) +
+      '&chiefdom=' + encodeURIComponent(chiefdom) +
+      '&phu='      + encodeURIComponent(phu);
+    const res  = await Promise.race([
+      fetch(url),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
+    ]);
+    const data = await res.json();
+    if (data.found) {
+      showPHUDupWarn(data, 'remote');
+      return; // button stays disabled inside showPHUDupWarn
+    }
+  } catch(e) {
+    // Network error or timeout — fail open (let them proceed, hard check on submit)
+    console.warn('[PHU check] Remote check failed:', e.message);
+  }
+
+  // Clean — re-enable button
+  if (btn) { btn.disabled = false; btn.innerHTML = origHTML; }
+}
+
+function showPHUDupWarn(rec, source) {
+  document.getElementById('phuDupWarn').style.display = 'block';
+
+  // Normalise field names — local records use snake_case, GAS response may differ
+  const dispatchId  = rec.dispatch_id  || rec.dispatchId  || '—';
+  const ts          = rec.timestamp    || rec.ts          || '';
+  const staffName   = rec.staff_name   || rec.staffName   || '—';
+  const driverName  = rec.driver_name  || rec.driverName  || rec.conveyor_name || '—';
+  const ig2         = rec.ig2_qty      != null ? rec.ig2_qty : (rec.ig2 != null ? rec.ig2 : '—');
+  const pbo         = rec.pbo_qty      != null ? rec.pbo_qty : (rec.pbo != null ? rec.pbo : '—');
+  const total       = rec.total_qty    != null ? rec.total_qty : (rec.total != null ? rec.total : '—');
+  const chiefdom    = rec.chiefdom     || '—';
+  const phu         = rec.phu          || '—';
+  const srcLabel    = source === 'remote'
+    ? '<span style="background:#e74c3c;color:#fff;padding:1px 7px;border-radius:10px;font-size:9px;font-weight:700;margin-left:6px;">GOOGLE SHEETS</span>'
+    : '<span style="background:var(--navy);color:#fff;padding:1px 7px;border-radius:10px;font-size:9px;font-weight:700;margin-left:6px;">LOCAL</span>';
+
+  let dtStr = '—';
+  if (ts) {
+    try {
+      const d = new Date(ts);
+      dtStr = d.toLocaleDateString('en-SL', {day:'2-digit', month:'short', year:'numeric'}) +
+              ' ' + d.toLocaleTimeString('en-SL', {hour:'2-digit', minute:'2-digit'});
+    } catch(e) { dtStr = ts; }
+  }
+
+  document.getElementById('phuDupCard').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:4px;">
+      <span style="font-size:13px;font-weight:700;color:var(--navy);">${dispatchId}${srcLabel}</span>
+      <span style="font-size:10px;color:var(--text-s);">${dtStr}</span>
+    </div>
+    <div style="font-size:12px;color:var(--text);margin-bottom:6px;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="var(--navy)" stroke-width="2" width="12" height="12" style="vertical-align:middle;margin-right:3px;"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      ${chiefdom} → <strong>${phu}</strong>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:4px;">
+      <span style="background:var(--navy-l);color:var(--navy);padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;">IG2: ${ig2}</span>
+      <span style="background:var(--navy-l);color:var(--navy);padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;">PBO: ${pbo}</span>
+      <span style="background:var(--green-l);color:var(--green-d);padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;">${total} ITNs</span>
+      ${driverName !== '—' ? `<span style="background:var(--gold-l);color:#8a6500;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;">${driverName}</span>` : ''}
+      <span style="background:var(--gray);color:var(--text-s);padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;">By: ${staffName}</span>
+    </div>
+  `;
+  const btn = document.getElementById('btnNextStep2');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> DUPLICATE PHU'; }
 }
 
 function updateTotal() {
@@ -831,6 +938,10 @@ function goStep2() {
   const pbo=parseInt(document.getElementById('qty-pbo').value)||0;
   if (!district||!chiefdom||!phu) { toast('Select District, Chiefdom and PHU.','error'); return; }
   if (ig2+pbo===0) { toast('Enter at least one ITN quantity.','error'); return; }
+  // Hard duplicate check
+  const dupKey = (district+'|'+chiefdom+'|'+phu).toLowerCase();
+  const dup = dispatches.find(r => ((r.destination_district||'')+'|'+(r.chiefdom||'')+'|'+(r.phu||'')).toLowerCase()===dupKey);
+  if (dup) { toast('This PHU already has a dispatch — '+dup.dispatch_id,'error'); return; }
   form.district=district; form.chiefdom=chiefdom; form.phu=phu; form.ig2=ig2; form.pbo=pbo;
   setStep(2);
 }
@@ -893,6 +1004,7 @@ function newDispatch() {
   document.getElementById('platePrev').textContent='— — —';
   stopDriverScanner();
   document.getElementById('step-receipt').style.display='none';
+  hidePHUDupWarn();
   setDistrictFromUser();
   setStep(1);
 }
