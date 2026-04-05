@@ -311,16 +311,38 @@ function buildUserMap(rows) {
     });
 }
 
-// ── CSV column reader — supports both old (adm1/adm2/hf) and new (District/Chiefdom/Name of PHU) headers ──
+// ── CSV column reader — robust against BOM, extra spaces, case variations ──────
+// Normalised key map built once from the first data row
+let _csvKeyMap = null;   // { 'district': 'District', 'name of phu': 'Name of PHU', ... }
+
+function buildCsvKeyMap(firstRow) {
+    _csvKeyMap = {};
+    Object.keys(firstRow).forEach(k => {
+        const clean = k.replace(/^\uFEFF/, '').trim().toLowerCase();
+        _csvKeyMap[clean] = k;
+    });
+    console.log('[CSV] Headers detected:', Object.values(_csvKeyMap));
+}
+
 function csvCol(row, ...names) {
     for (const n of names) {
+        // 1. Exact key match
         const v = (row[n] || '').trim();
         if (v) return v;
+        // 2. Normalised match (handles BOM / spaces / case)
+        if (_csvKeyMap) {
+            const orig = _csvKeyMap[n.toLowerCase()];
+            if (orig) {
+                const v2 = (row[orig] || '').trim();
+                if (v2) return v2;
+            }
+        }
     }
     return '';
 }
 
 function buildFilteredLocationData(rows) {
+    if (rows.length > 0) buildCsvKeyMap(rows[0]);
     const f = {};
     rows.forEach(row => {
         const d   = csvCol(row, 'District',    'adm1');
@@ -347,31 +369,57 @@ function buildFilteredLocationData(rows) {
 function loadLocationData() {
     return new Promise((resolve, reject) => {
         Papa.parse(CONFIG.CSV_FILE, {
-            download: true, header: true, skipEmptyLines: true,
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: h => h.replace(/^\uFEFF/, '').trim(), // strip BOM + spaces from headers
             complete(results) {
                 ALL_LOCATION_DATA = {};
+                if (!results.data || results.data.length === 0) {
+                    console.warn('[CSV] No data rows in', CONFIG.CSV_FILE);
+                    LOCATION_DATA = ALL_LOCATION_DATA;
+                    resolve(); return;
+                }
+
+                buildCsvKeyMap(results.data[0]);
                 buildUserMap(results.data);
+
+                let loaded = 0, skipped = 0;
                 results.data.forEach(row => {
                     const d   = csvCol(row, 'District',    'adm1');
                     const c   = csvCol(row, 'Chiefdom',    'adm2');
                     const fac = csvCol(row, 'Name of PHU', 'hf', 'adm3');
                     const com = csvCol(row, 'Community',   'community');
                     const sch = csvCol(row, 'School Name', 'school_name');
-                    if (!d || !c || !fac || !com || !sch) return;
+                    if (!d || !c || !fac || !com || !sch) { skipped++; return; }
                     if (!ALL_LOCATION_DATA[d]) ALL_LOCATION_DATA[d]={};
                     if (!ALL_LOCATION_DATA[d][c]) ALL_LOCATION_DATA[d][c]={};
                     if (!ALL_LOCATION_DATA[d][c][fac]) ALL_LOCATION_DATA[d][c][fac]={};
                     if (!ALL_LOCATION_DATA[d][c][fac][com]) ALL_LOCATION_DATA[d][c][fac][com]=[];
                     if (!ALL_LOCATION_DATA[d][c][fac][com].includes(sch))
                         ALL_LOCATION_DATA[d][c][fac][com].push(sch);
+                    loaded++;
                 });
+
                 for (const d in ALL_LOCATION_DATA) for (const c in ALL_LOCATION_DATA[d])
                     for (const fac in ALL_LOCATION_DATA[d][c])
                         for (const com in ALL_LOCATION_DATA[d][c][fac])
                             ALL_LOCATION_DATA[d][c][fac][com].sort();
+
+                // Expose for cascading dropdowns
+                LOCATION_DATA = ALL_LOCATION_DATA;
+
+                const dCount = Object.keys(ALL_LOCATION_DATA).length;
+                console.log(`[CSV] ${loaded} rows loaded → ${dCount} district(s). Skipped: ${skipped}`);
+                if (dCount === 0) {
+                    console.error('[CSV] No districts loaded! Check CSV column names:', Object.values(_csvKeyMap || {}));
+                }
                 resolve();
             },
-            error: reject
+            error(err) {
+                console.error('[CSV] Parse error:', err);
+                reject(err);
+            }
         });
     });
 }
@@ -494,15 +542,14 @@ const _dupCheck = {
 async function checkDuplicateOnline(key) {
     if (!key || !state.isOnline) return false;
     try {
-        const parts = key.split('|'); // district|chiefdom|section|facility|community|school
+        const parts = key.split('|'); // district|chiefdom|facility|community|school
         const params = new URLSearchParams({
             action:    'checkDuplicate',
             district:  parts[0] || '',
             chiefdom:  parts[1] || '',
-            section:   parts[2] || '',
-            facility:  parts[3] || '',
-            community: parts[4] || '',
-            school:    parts[5] || ''
+            facility:  parts[2] || '',
+            community: parts[3] || '',
+            school:    parts[4] || ''
         });
         const res = await Promise.race([
             fetch(CONFIG.SCRIPT_URL + '?' + params.toString()),
