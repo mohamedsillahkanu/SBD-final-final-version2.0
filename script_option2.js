@@ -215,68 +215,64 @@ window.addEventListener('appinstalled', () => {
     console.log('[PWA] Installed');
 });
 
+// Global install handler — called directly by onclick
+window.pwaInstallClick = async function() {
+    console.log('[PWA] Install clicked, prompt available:', !!deferredPrompt);
+    if (deferredPrompt) {
+        const btn = document.getElementById('installBtn');
+        if (btn) { btn.textContent = 'Installing…'; btn.disabled = true; }
+        try {
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            deferredPrompt = null;
+            if (outcome === 'accepted') {
+                if (btn) { btn.textContent = '✓ Installed!'; btn.style.background = '#28a745'; }
+                showNotification('Installed! Open from your home screen.', 'success');
+                setTimeout(() => {
+                    const b = document.getElementById('installBanner');
+                    if (b) b.style.display = 'none';
+                }, 3000);
+            } else {
+                if (btn) { btn.textContent = 'INSTALL'; btn.disabled = false; }
+            }
+        } catch(e) {
+            console.error('[PWA]', e);
+            const btn2 = document.getElementById('installBtn');
+            if (btn2) { btn2.textContent = 'INSTALL'; btn2.disabled = false; }
+        }
+        return;
+    }
+    // No prompt — show instructions using app notification (not alert)
+    const isIOS     = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isAndroid = /android/i.test(navigator.userAgent);
+    if (isIOS)
+        showNotification('Tap Share (↑) then "Add to Home Screen"', 'info');
+    else if (isAndroid)
+        showNotification('Tap browser menu (⋮) → "Add to Home Screen" or "Install App"', 'info');
+    else
+        showNotification('Click the install icon (⊕) in your browser address bar', 'info');
+};
+
 function setupInstallButton() {
     const btn = document.getElementById('installBtn');
     if (!btn) return;
-
-    // If already running as installed PWA, hide the banner entirely
+    // Running as installed PWA — hide banner
     if (window.matchMedia('(display-mode: standalone)').matches ||
         window.navigator.standalone === true) {
-        const banner = document.getElementById('installBanner');
-        if (banner) banner.style.display = 'none';
+        const b = document.getElementById('installBanner');
+        if (b) b.style.display = 'none';
         return;
     }
-
-    // Button is always visible — wire it up
     btn.style.display = 'inline-flex';
     btn.style.opacity = '1';
-    btn.style.cursor  = 'pointer';
-
-    btn.addEventListener('click', async () => {
-        if (deferredPrompt) {
-            // Browser is ready — trigger native install
-            btn.textContent = 'Installing…';
-            btn.disabled = true;
-            try {
-                deferredPrompt.prompt();
-                const { outcome } = await deferredPrompt.userChoice;
-                deferredPrompt = null;
-                if (outcome === 'accepted') {
-                    btn.textContent = '✓ Installed!';
-                    btn.style.background = '#28a745';
-                    setTimeout(() => {
-                        const banner = document.getElementById('installBanner');
-                        if (banner) banner.style.display = 'none';
-                    }, 2500);
-                } else {
-                    btn.textContent = 'INSTALL';
-                    btn.disabled = false;
-                }
-            } catch(e) {
-                btn.textContent = 'INSTALL';
-                btn.disabled = false;
-            }
-        } else {
-            // Prompt not available — give clear instructions
-            const isAndroid = /android/i.test(navigator.userAgent);
-            const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-            let msg = 'To install:
-';
-            if (isIOS)         msg += 'Tap the Share button (□↑) → "Add to Home Screen"';
-            else if (isAndroid) msg += 'Tap the browser menu (⋮) → "Add to Home Screen" or "Install App"';
-            else                msg += 'Click the browser menu → "Install SBD 2026" or address bar install icon (⊕)';
-            alert(msg);
-        }
-    });
+    btn.setAttribute('onclick', 'window.pwaInstallClick()');
 }
 
-// Aliases for any legacy references
 function showBanner()        { _pwaBannerShow(); }
 function hideBanner()        { _pwaBannerHide(); }
 function showInstallSuccess(){ _pwaSuccess(); }
-function syncNavInstallBtn(s){ _pwaSyncNavBtn(s); }
+function syncNavInstallBtn(s){}
 function injectInstallBanner(){ _pwaInjectBanner(); }
-
 
 // ============================================
 // APP UPDATE
