@@ -64,15 +64,23 @@ function cacheImagesForOffline() {
 // ============================================
 if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js')
+        navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
             .then(reg => {
                 console.log('[PWA] Service Worker registered');
+                reg.update(); // always check for new SW on load
                 reg.addEventListener('updatefound', () => {
                     const nw = reg.installing;
                     nw.addEventListener('statechange', () => {
-                        if (nw.state === 'installed' && navigator.serviceWorker.controller)
-                            showNotification('App updated! Loading fresh version...', 'info');
+                        if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                            // New version ready — activate and reload automatically
+                            if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+                        }
                     });
+                });
+
+                // When new SW takes control — reload to get fresh files
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    window.location.reload();
                 });
                 cacheImagesForOffline();
             })
